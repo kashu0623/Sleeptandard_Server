@@ -90,7 +90,7 @@ def _get_upload(
 
 
 def _uploaded_parts(upload: SleepSessionUpload) -> list[dict]:
-    if uses_local_multipart_backend():
+    if upload.status != "UPLOADING" or uses_local_multipart_backend():
         return sorted(upload.uploaded_parts or [], key=lambda part: part["partNumber"])
     return list_uploaded_parts(
         object_key=upload.object_key,

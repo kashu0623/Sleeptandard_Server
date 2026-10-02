@@ -12,9 +12,10 @@ def get_s3_client():
     client_kwargs = {
         "service_name": "s3",
         "region_name": settings.aws_region,
-        "aws_access_key_id": settings.aws_access_key_id,
-        "aws_secret_access_key": settings.aws_secret_access_key,
     }
+    if settings.aws_access_key_id and settings.aws_secret_access_key:
+        client_kwargs["aws_access_key_id"] = settings.aws_access_key_id
+        client_kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
     if settings.aws_session_token is not None:
         client_kwargs["aws_session_token"] = settings.aws_session_token
     if settings.aws_s3_endpoint_url:

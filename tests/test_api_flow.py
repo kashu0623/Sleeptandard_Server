@@ -1,9 +1,12 @@
 import uuid
 from urllib.parse import urlparse
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.config import get_settings
 from app.main import app
+from app.services.auth import create_access_token
 
 
 client = TestClient(app)
@@ -130,6 +133,42 @@ def test_auth_signup_login_and_me_flow() -> None:
     )
     assert protected_response.status_code == 200
     assert protected_response.json()["email"] == email
+
+
+def test_auth_rejects_missing_tampered_and_expired_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, user_id = create_auth_headers()
+
+    missing_response = client.get("/auth/me")
+    assert missing_response.status_code == 401
+    assert missing_response.json() == {
+        "code": "AUTHENTICATION_REQUIRED",
+        "message": "Authorization bearer token is required",
+    }
+
+    tampered_response = client.get(
+        "/auth/me",
+        headers={"Authorization": "Bearer tampered-token"},
+    )
+    assert tampered_response.status_code == 401
+    assert tampered_response.json() == {
+        "code": "INVALID_ACCESS_TOKEN",
+        "message": "Invalid or expired access token",
+    }
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "access_token_expires_minutes", -1)
+    expired_token = create_access_token(uuid.UUID(user_id))
+    expired_response = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {expired_token}"},
+    )
+    assert expired_response.status_code == 401
+    assert expired_response.json() == {
+        "code": "INVALID_ACCESS_TOKEN",
+        "message": "Invalid or expired access token",
+    }
 
 
 def test_user_and_device_registration_are_reusable() -> None:
@@ -548,7 +587,7 @@ def test_upload_completed_requires_file_keys() -> None:
     }
 
 
-def test_raw_multipart_upload_flow_for_android_app_contract() -> None:
+def test_raw_multipart_upload_flow_for_android_app_contract(monkeypatch) -> None:
     auth_headers, user_id = create_auth_headers()
     device_code = f"TEST_DEV_{uuid.uuid4().hex}"
 
@@ -662,6 +701,32 @@ def test_raw_multipart_upload_flow_for_android_app_contract() -> None:
     assert completed["status"] == "COMPLETE"
     assert completed["sizeBytes"] == len(raw_bytes)
 
+    def fail_if_s3_is_queried(**_kwargs):
+        raise AssertionError("Completed multipart upload must not query S3 ListParts")
+
+    monkeypatch.setattr(
+        "app.routers.raw_uploads.uses_local_multipart_backend",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.routers.raw_uploads.list_uploaded_parts",
+        fail_if_s3_is_queried,
+    )
+    completed_status_response = client.get(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}",
+        headers=auth_headers,
+    )
+    assert completed_status_response.status_code == 200
+    assert completed_status_response.json()["status"] == "COMPLETE"
+    assert completed_status_response.json()["uploadedParts"] == [
+        {
+            "partNumber": 1,
+            "etag": etag,
+            "checksumCrc32c": checksum_crc32c,
+            "sizeBytes": len(raw_bytes),
+        }
+    ]
+
     detail_response = client.get(
         f"/sleep-sessions/{session_id}",
         headers=auth_headers,
@@ -670,6 +735,152 @@ def test_raw_multipart_upload_flow_for_android_app_contract() -> None:
     detail = detail_response.json()
     assert detail["sensor_file_key"] == completed["objectKey"]
     assert detail["upload_status"] == "completed"
+
+
+def test_raw_multipart_upload_failure_and_abort_states(monkeypatch) -> None:
+    auth_headers, _ = create_auth_headers()
+    device_code = f"TEST_DEV_{uuid.uuid4().hex}"
+
+    start_response = client.post(
+        "/sleep-sessions/start",
+        headers=auth_headers,
+        json={
+            "device_code": device_code,
+            "started_at": "2026-09-05T15:00:00Z",
+        },
+    )
+    assert start_response.status_code == 201
+    session_id = start_response.json()["session_id"]
+
+    raw_bytes = b"x" * 150
+    sha256 = "b" * 64
+    initiate_response = client.post(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads",
+        headers=auth_headers,
+        json={
+            "formatVersion": "potch-raw-v1",
+            "fileName": f"potch_packet_raw_data_20260911_183104_123_{session_id}.bin",
+            "contentType": "application/octet-stream",
+            "sizeBytes": len(raw_bytes),
+            "recordSizeBytes": 150,
+            "recordCount": 1,
+            "sha256": sha256,
+        },
+    )
+    assert initiate_response.status_code == 201
+    upload_id = initiate_response.json()["uploadId"]
+
+    missing_part_response = client.post(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/complete",
+        headers=auth_headers,
+        json={
+            "parts": [
+                {
+                    "partNumber": 1,
+                    "etag": '"not-uploaded"',
+                    "checksumCrc32c": "AAAAAA==",
+                }
+            ],
+            "sizeBytes": len(raw_bytes),
+            "sha256": sha256,
+        },
+    )
+    assert missing_part_response.status_code == 409
+    assert missing_part_response.json() == {
+        "code": "UPLOAD_PART_MISSING",
+        "message": "At least one uploaded part is missing",
+        "retryable": True,
+    }
+
+    checksum_crc32c = "AAAAAA=="
+    presign_response = client.post(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/parts/presign",
+        headers=auth_headers,
+        json={
+            "partNumber": 1,
+            "sizeBytes": len(raw_bytes),
+            "checksumCrc32c": checksum_crc32c,
+        },
+    )
+    assert presign_response.status_code == 200
+    put_response = client.put(
+        urlparse(presign_response.json()["url"]).path,
+        content=raw_bytes,
+        headers={
+            "Content-Type": "application/octet-stream",
+            "x-amz-checksum-crc32c": checksum_crc32c,
+        },
+    )
+    assert put_response.status_code == 200
+
+    wrong_etag_response = client.post(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/complete",
+        headers=auth_headers,
+        json={
+            "parts": [
+                {
+                    "partNumber": 1,
+                    "etag": '"wrong-etag"',
+                    "checksumCrc32c": checksum_crc32c,
+                }
+            ],
+            "sizeBytes": len(raw_bytes),
+            "sha256": sha256,
+        },
+    )
+    assert wrong_etag_response.status_code == 409
+    assert wrong_etag_response.json() == {
+        "code": "UPLOAD_PART_ETAG_MISMATCH",
+        "message": "Uploaded part ETag does not match",
+        "retryable": False,
+    }
+
+    abort_response = client.delete(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}",
+        headers=auth_headers,
+    )
+    assert abort_response.status_code == 204
+
+    def fail_if_s3_is_queried(**_kwargs):
+        raise AssertionError("Aborted multipart upload must not query S3 ListParts")
+
+    monkeypatch.setattr(
+        "app.routers.raw_uploads.uses_local_multipart_backend",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.routers.raw_uploads.list_uploaded_parts",
+        fail_if_s3_is_queried,
+    )
+    aborted_status_response = client.get(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}",
+        headers=auth_headers,
+    )
+    assert aborted_status_response.status_code == 200
+    assert aborted_status_response.json()["status"] == "ABORTED"
+
+    presign_after_abort_response = client.post(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/parts/presign",
+        headers=auth_headers,
+        json={
+            "partNumber": 1,
+            "sizeBytes": len(raw_bytes),
+            "checksumCrc32c": checksum_crc32c,
+        },
+    )
+    assert presign_after_abort_response.status_code == 409
+    assert presign_after_abort_response.json() == {
+        "code": "UPLOAD_NOT_ACTIVE",
+        "message": "Upload is not active",
+        "retryable": False,
+    }
+
+    detail_response = client.get(
+        f"/sleep-sessions/{session_id}",
+        headers=auth_headers,
+    )
+    assert detail_response.status_code == 200
+    assert detail_response.json()["upload_status"] == "failed"
 
 
 def test_raw_multipart_upload_requires_member_token() -> None:

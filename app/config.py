@@ -12,8 +12,9 @@ class Settings(BaseSettings):
     access_token_secret_key: str = "local-dev-access-token-secret-change-me"
     access_token_expires_minutes: int = 60 * 24 * 7
     aws_region: str = "ap-northeast-2"
-    aws_access_key_id: str = "local-test-access-key"
-    aws_secret_access_key: str = "local-test-secret-key"
+    # When deployed to AWS, leave these unset so boto3 uses the instance role.
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
     aws_session_token: str | None = None
     aws_s3_endpoint_url: str | None = None
     s3_bucket_name: str = "wearable-sleep-local"

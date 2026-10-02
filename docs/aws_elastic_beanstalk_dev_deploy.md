@@ -83,7 +83,7 @@ Elastic Beanstalk 서버가 RDS에 접속할 수 있도록 보안 그룹을 연�
 raw data multipart upload 테스트용 bucket을 만듭니다.
 
 ```text
-Bucket name: sleeptandard-raw-dev
+Bucket name: sleeptandard-raw-dev-062560095342-apne2
 Region: ap-northeast-2 권장
 Public access: Block all public access 유지
 ```
@@ -102,10 +102,8 @@ ACCESS_TOKEN_SECRET_KEY=dev-random-long-secret-change-me
 ACCESS_TOKEN_EXPIRES_MINUTES=10080
 
 AWS_REGION=ap-northeast-2
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
 AWS_S3_ENDPOINT_URL=
-S3_BUCKET_NAME=sleeptandard-raw-dev
+S3_BUCKET_NAME=sleeptandard-raw-dev-062560095342-apne2
 S3_UPLOAD_URL_EXPIRES_SEC=900
 S3_MULTIPART_BACKEND=aws
 PUBLIC_BASE_URL=https://DEV_ELASTIC_BEANSTALK_URL
@@ -116,28 +114,23 @@ PUBLIC_BASE_URL=https://DEV_ELASTIC_BEANSTALK_URL
 ```text
 .env 파일은 AWS에 올리지 않습니다.
 ACCESS_TOKEN_SECRET_KEY는 로컬 기본값을 그대로 쓰면 안 됩니다.
-AWS key는 가능하면 dev 전용 IAM user 또는 role로 최소 권한만 부여합니다.
+AWS access key를 환경변수에 넣지 않습니다. Elastic Beanstalk 인스턴스 역할에 최소 권한을 부여합니다.
 ```
 
 ## 5. IAM 권한
 
-개발 서버가 S3 multipart upload를 제어하려면 최소한 아래 S3 권한이 필요합니다.
+개발 서버가 S3 multipart upload를 제어하려면 Elastic Beanstalk 인스턴스 역할에 아래 최소 권한을 부여합니다.
 
 ```text
-s3:CreateMultipartUpload
-s3:UploadPart
-s3:ListMultipartUploadParts
-s3:CompleteMultipartUpload
-s3:AbortMultipartUpload
 s3:PutObject
-s3:GetObject
+s3:AbortMultipartUpload
+s3:ListMultipartUploadParts
 ```
 
 대상 bucket은 dev bucket으로 제한합니다.
 
 ```text
-arn:aws:s3:::sleeptandard-raw-dev
-arn:aws:s3:::sleeptandard-raw-dev/*
+arn:aws:s3:::sleeptandard-raw-dev-062560095342-apne2/users/*
 ```
 
 ## 6. 배포 후 DB migration
