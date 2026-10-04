@@ -647,6 +647,20 @@ def test_raw_multipart_upload_flow_for_android_app_contract(monkeypatch) -> None
     assert repeated_initiate_response.status_code == 200
     assert repeated_initiate_response.json()["uploadId"] == upload_id
 
+    attempt_response = client.post(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/attempts",
+        headers=auth_headers,
+    )
+    assert attempt_response.status_code == 200
+    attempt = attempt_response.json()
+    assert attempt["status"] == "UPLOADING"
+    assert attempt["attemptCount"] == 1
+    assert attempt["lastAttemptAt"] is not None
+    assert attempt["lastError"] is None
+    assert attempt["sizeBytes"] == len(raw_bytes)
+    assert attempt["uploadedBytes"] == 0
+    assert attempt["totalParts"] == 1
+
     status_response = client.get(
         f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}",
         headers=auth_headers,
@@ -717,8 +731,12 @@ def test_raw_multipart_upload_flow_for_android_app_contract(monkeypatch) -> None
         headers=auth_headers,
     )
     assert completed_status_response.status_code == 200
-    assert completed_status_response.json()["status"] == "COMPLETE"
-    assert completed_status_response.json()["uploadedParts"] == [
+    completed_status = completed_status_response.json()
+    assert completed_status["status"] == "COMPLETE"
+    assert completed_status["uploadedBytes"] == len(raw_bytes)
+    assert completed_status["attemptCount"] == 1
+    assert completed_status["completedAt"] is not None
+    assert completed_status["uploadedParts"] == [
         {
             "partNumber": 1,
             "etag": etag,
@@ -726,6 +744,17 @@ def test_raw_multipart_upload_flow_for_android_app_contract(monkeypatch) -> None
             "sizeBytes": len(raw_bytes),
         }
     ]
+
+    session_uploads_response = client.get(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads",
+        headers=auth_headers,
+    )
+    assert session_uploads_response.status_code == 200
+    session_uploads = session_uploads_response.json()
+    assert session_uploads["sessionId"] == session_id
+    assert session_uploads["sessionUploadStatus"] == "completed"
+    assert len(session_uploads["uploads"]) == 1
+    assert session_uploads["uploads"][0]["uploadId"] == upload_id
 
     detail_response = client.get(
         f"/sleep-sessions/{session_id}",
@@ -770,6 +799,13 @@ def test_raw_multipart_upload_failure_and_abort_states(monkeypatch) -> None:
     assert initiate_response.status_code == 201
     upload_id = initiate_response.json()["uploadId"]
 
+    first_attempt_response = client.post(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/attempts",
+        headers=auth_headers,
+    )
+    assert first_attempt_response.status_code == 200
+    assert first_attempt_response.json()["attemptCount"] == 1
+
     missing_part_response = client.post(
         f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/complete",
         headers=auth_headers,
@@ -791,6 +827,53 @@ def test_raw_multipart_upload_failure_and_abort_states(monkeypatch) -> None:
         "message": "At least one uploaded part is missing",
         "retryable": True,
     }
+
+    failure_report_response = client.post(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/failure",
+        headers=auth_headers,
+        json={
+            "errorCode": "CRC32C_UNAVAILABLE",
+            "errorMessage": "java.util.zip.CRC32C is unavailable on API 31",
+            "retryable": False,
+        },
+    )
+    assert failure_report_response.status_code == 200
+    failed = failure_report_response.json()
+    assert failed["status"] == "FAILED"
+    assert failed["attemptCount"] == 1
+    assert failed["lastError"] == {
+        "code": "CRC32C_UNAVAILABLE",
+        "message": "java.util.zip.CRC32C is unavailable on API 31",
+        "retryable": False,
+        "reportedAt": failed["lastError"]["reportedAt"],
+    }
+
+    failed_session_response = client.get(
+        f"/sleep-sessions/{session_id}",
+        headers=auth_headers,
+    )
+    assert failed_session_response.status_code == 200
+    assert failed_session_response.json()["upload_status"] == "failed"
+
+    failed_uploads_response = client.get(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads",
+        headers=auth_headers,
+    )
+    assert failed_uploads_response.status_code == 200
+    assert failed_uploads_response.json()["sessionUploadStatus"] == "failed"
+    assert failed_uploads_response.json()["uploads"][0]["lastError"]["code"] == (
+        "CRC32C_UNAVAILABLE"
+    )
+
+    retry_attempt_response = client.post(
+        f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/attempts",
+        headers=auth_headers,
+    )
+    assert retry_attempt_response.status_code == 200
+    retry_attempt = retry_attempt_response.json()
+    assert retry_attempt["status"] == "UPLOADING"
+    assert retry_attempt["attemptCount"] == 2
+    assert retry_attempt["lastError"]["code"] == "CRC32C_UNAVAILABLE"
 
     checksum_crc32c = "AAAAAA=="
     presign_response = client.post(
@@ -858,6 +941,7 @@ def test_raw_multipart_upload_failure_and_abort_states(monkeypatch) -> None:
     )
     assert aborted_status_response.status_code == 200
     assert aborted_status_response.json()["status"] == "ABORTED"
+    assert aborted_status_response.json()["abortedAt"] is not None
 
     presign_after_abort_response = client.post(
         f"/v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/parts/presign",

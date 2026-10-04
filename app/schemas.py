@@ -363,12 +363,49 @@ class RawUploadPartRead(BaseModel):
     size_bytes: int = Field(alias="sizeBytes")
 
 
+class RawUploadLastErrorRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    code: str
+    message: str
+    retryable: bool
+    reported_at: datetime = Field(alias="reportedAt")
+
+
 class RawUploadStatusResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    upload_id: uuid.UUID = Field(alias="uploadId")
     status: str
     object_key: str = Field(alias="objectKey")
+    file_name: str = Field(alias="fileName")
+    size_bytes: int = Field(alias="sizeBytes")
+    uploaded_bytes: int = Field(alias="uploadedBytes")
+    total_parts: int = Field(alias="totalParts")
+    attempt_count: int = Field(alias="attemptCount")
+    last_attempt_at: datetime | None = Field(alias="lastAttemptAt")
+    last_error: RawUploadLastErrorRead | None = Field(alias="lastError")
+    completed_at: datetime | None = Field(alias="completedAt")
+    aborted_at: datetime | None = Field(alias="abortedAt")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
     uploaded_parts: list[RawUploadPartRead] = Field(alias="uploadedParts")
+
+
+class RawUploadListResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    session_id: uuid.UUID = Field(alias="sessionId")
+    session_upload_status: str = Field(alias="sessionUploadStatus")
+    uploads: list[RawUploadStatusResponse]
+
+
+class RawUploadFailureRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    error_code: str = Field(alias="errorCode", min_length=1, max_length=100)
+    error_message: str = Field(alias="errorMessage", min_length=1, max_length=2000)
+    retryable: bool
 
 
 class RawUploadPresignPartRequest(BaseModel):

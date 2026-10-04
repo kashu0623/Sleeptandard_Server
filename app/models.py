@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import (
     CheckConstraint,
@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     BigInteger,
+    Boolean,
     ForeignKey,
     Integer,
     String,
@@ -167,6 +168,16 @@ class SleepSessionUpload(TimestampMixin, Base):
     part_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     uploaded_parts: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(100))
+    last_error_message: Mapped[str | None] = mapped_column(Text)
+    last_error_retryable: Mapped[bool | None] = mapped_column(Boolean)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    aborted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     sleep_session: Mapped[SleepSession] = relationship(back_populates="uploads")
 

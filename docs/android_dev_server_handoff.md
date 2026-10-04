@@ -198,6 +198,42 @@ Raw 업로드 시작 요청의 고정값:
 
 Android native 앱의 S3 업로드에는 웹 브라우저 CORS 설정이 필요하지 않습니다.
 
+### Raw 업로드 상태 확인
+
+세션 ID만 알고 있을 때 해당 세션의 업로드 전체 상태를 조회합니다.
+
+```text
+GET /v1/sleep-sessions/{session_id}/raw-uploads
+```
+
+응답에는 `sessionUploadStatus`와 각 파일의 아래 정보가 포함됩니다.
+
+```text
+status, fileName, sizeBytes, uploadedBytes, totalParts
+attemptCount, lastAttemptAt, lastError
+completedAt, abortedAt, createdAt, updatedAt
+```
+
+Android 작업자는 실제 전송을 시작할 때 시도 횟수를 보고합니다. 이 호출 실패는 실제 업로드를 막지 않습니다.
+
+```text
+POST /v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/attempts
+```
+
+앱 내부 또는 HTTP 오류로 작업이 끝나면 실패 원인을 보고합니다.
+
+```text
+POST /v1/sleep-sessions/{session_id}/raw-uploads/{upload_id}/failure
+
+{
+  "errorCode": "CRC32C_UNAVAILABLE",
+  "errorMessage": "java.util.zip.CRC32C is unavailable on API 31",
+  "retryable": false
+}
+```
+
+실패 보고 후 상태는 `FAILED`가 됩니다. 같은 파일을 다시 시도하면 시도 보고 API가 상태를 `UPLOADING`으로 되돌리고 기존 S3 multipart upload를 이어서 사용합니다.
+
 ## 오류 응답
 
 서버 오류는 아래와 같이 일관된 JSON으로 반환됩니다.

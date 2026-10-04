@@ -13,8 +13,11 @@ from app.models import SleepSession, SleepSessionUpload, User
 from app.schemas import (
     RawUploadCompleteRequest,
     RawUploadCompleteResponse,
+    RawUploadFailureRequest,
     RawUploadInitiateRequest,
     RawUploadInitiateResponse,
+    RawUploadLastErrorRead,
+    RawUploadListResponse,
     RawUploadPartRead,
     RawUploadPresignPartRequest,
     RawUploadPresignPartResponse,
@@ -90,11 +93,65 @@ def _get_upload(
 
 
 def _uploaded_parts(upload: SleepSessionUpload) -> list[dict]:
-    if upload.status != "UPLOADING" or uses_local_multipart_backend():
+    if upload.status in {"COMPLETE", "ABORTED"} or uses_local_multipart_backend():
         return sorted(upload.uploaded_parts or [], key=lambda part: part["partNumber"])
     return list_uploaded_parts(
         object_key=upload.object_key,
         s3_upload_id=upload.s3_upload_id,
+    )
+
+
+def _raw_upload_status_response(
+    upload: SleepSessionUpload,
+    uploaded_parts: list[dict] | None = None,
+) -> RawUploadStatusResponse:
+    parts = uploaded_parts if uploaded_parts is not None else _uploaded_parts(upload)
+    part_models = [
+        RawUploadPartRead(
+            part_number=part["partNumber"],
+            etag=part["etag"],
+            checksum_crc32c=part.get("checksumCrc32c", ""),
+            size_bytes=part["sizeBytes"],
+        )
+        for part in parts
+    ]
+    uploaded_bytes = (
+        upload.size_bytes
+        if upload.status == "COMPLETE"
+        else sum(part.size_bytes for part in part_models)
+    )
+    total_parts = (upload.size_bytes + upload.part_size_bytes - 1) // (
+        upload.part_size_bytes
+    )
+    last_error = None
+    if (
+        upload.last_error_code is not None
+        and upload.last_error_message is not None
+        and upload.last_error_retryable is not None
+        and upload.last_error_at is not None
+    ):
+        last_error = RawUploadLastErrorRead(
+            code=upload.last_error_code,
+            message=upload.last_error_message,
+            retryable=upload.last_error_retryable,
+            reported_at=upload.last_error_at,
+        )
+    return RawUploadStatusResponse(
+        upload_id=upload.id,
+        status=upload.status,
+        object_key=upload.object_key,
+        file_name=upload.file_name,
+        size_bytes=upload.size_bytes,
+        uploaded_bytes=uploaded_bytes,
+        total_parts=total_parts,
+        attempt_count=upload.attempt_count,
+        last_attempt_at=upload.last_attempt_at,
+        last_error=last_error,
+        completed_at=upload.completed_at,
+        aborted_at=upload.aborted_at,
+        created_at=upload.created_at,
+        updated_at=upload.updated_at,
+        uploaded_parts=part_models,
     )
 
 
@@ -257,6 +314,28 @@ def initiate_raw_upload(
 
 
 @router.get(
+    "/sleep-sessions/{session_id}/raw-uploads",
+    response_model=RawUploadListResponse,
+)
+def list_raw_uploads(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RawUploadListResponse:
+    sleep_session = _get_sleep_session(db, session_id, current_user)
+    uploads = db.scalars(
+        select(SleepSessionUpload)
+        .where(SleepSessionUpload.session_id == session_id)
+        .order_by(SleepSessionUpload.created_at.desc())
+    ).all()
+    return RawUploadListResponse(
+        session_id=session_id,
+        session_upload_status=sleep_session.upload_status,
+        uploads=[_raw_upload_status_response(upload) for upload in uploads],
+    )
+
+
+@router.get(
     "/sleep-sessions/{session_id}/raw-uploads/{upload_id}",
     response_model=RawUploadStatusResponse,
 )
@@ -267,20 +346,78 @@ def get_raw_upload_status(
     db: Session = Depends(get_db),
 ) -> RawUploadStatusResponse:
     upload = _get_upload(db, session_id, upload_id, current_user)
-    parts = [
-        RawUploadPartRead(
-            part_number=part["partNumber"],
-            etag=part["etag"],
-            checksum_crc32c=part.get("checksumCrc32c", ""),
-            size_bytes=part["sizeBytes"],
+    return _raw_upload_status_response(upload)
+
+
+@router.post(
+    "/sleep-sessions/{session_id}/raw-uploads/{upload_id}/attempts",
+    response_model=RawUploadStatusResponse,
+)
+def report_raw_upload_attempt(
+    session_id: uuid.UUID,
+    upload_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RawUploadStatusResponse:
+    upload = _get_upload(db, session_id, upload_id, current_user)
+    if upload.status == "ABORTED":
+        raise_app_error(
+            status.HTTP_409_CONFLICT,
+            "UPLOAD_NOT_ACTIVE",
+            "Upload is not active",
+            retryable=False,
         )
-        for part in _uploaded_parts(upload)
-    ]
-    return RawUploadStatusResponse(
-        status=upload.status,
-        object_key=upload.object_key,
-        uploaded_parts=parts,
-    )
+    if upload.status != "COMPLETE":
+        upload.status = "UPLOADING"
+        upload.attempt_count += 1
+        upload.last_attempt_at = datetime.now(timezone.utc)
+        sleep_session = db.get(SleepSession, session_id)
+        if sleep_session is not None:
+            sleep_session.upload_status = "uploading"
+        db.commit()
+        db.refresh(upload)
+    return _raw_upload_status_response(upload)
+
+
+@router.post(
+    "/sleep-sessions/{session_id}/raw-uploads/{upload_id}/failure",
+    response_model=RawUploadStatusResponse,
+)
+def report_raw_upload_failure(
+    session_id: uuid.UUID,
+    upload_id: uuid.UUID,
+    request: RawUploadFailureRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> RawUploadStatusResponse:
+    upload = _get_upload(db, session_id, upload_id, current_user)
+    if upload.status == "COMPLETE":
+        raise_app_error(
+            status.HTTP_409_CONFLICT,
+            "UPLOAD_ALREADY_COMPLETE",
+            "Completed upload cannot be marked as failed",
+            retryable=False,
+        )
+    if upload.status == "ABORTED":
+        raise_app_error(
+            status.HTTP_409_CONFLICT,
+            "UPLOAD_NOT_ACTIVE",
+            "Upload is not active",
+            retryable=False,
+        )
+
+    now = datetime.now(timezone.utc)
+    upload.status = "FAILED"
+    upload.last_error_code = request.error_code
+    upload.last_error_message = request.error_message
+    upload.last_error_retryable = request.retryable
+    upload.last_error_at = now
+    sleep_session = db.get(SleepSession, session_id)
+    if sleep_session is not None:
+        sleep_session.upload_status = "failed"
+    db.commit()
+    db.refresh(upload)
+    return _raw_upload_status_response(upload)
 
 
 @router.post(
@@ -393,6 +530,7 @@ def complete_raw_upload(
         parts=parts,
     )
     upload.status = "COMPLETE"
+    upload.completed_at = datetime.now(timezone.utc)
     sleep_session = _get_sleep_session(db, session_id, current_user)
     sleep_session.sensor_file_key = upload.object_key
     sleep_session.upload_status = "completed"
@@ -417,12 +555,13 @@ def abort_raw_upload(
     db: Session = Depends(get_db),
 ) -> Response:
     upload = _get_upload(db, session_id, upload_id, current_user)
-    if upload.status == "UPLOADING":
+    if upload.status in {"UPLOADING", "FAILED"}:
         abort_multipart_upload(
             object_key=upload.object_key,
             s3_upload_id=upload.s3_upload_id,
         )
         upload.status = "ABORTED"
+        upload.aborted_at = datetime.now(timezone.utc)
         sleep_session = db.get(SleepSession, session_id)
         if sleep_session is not None:
             sleep_session.upload_status = "failed"
