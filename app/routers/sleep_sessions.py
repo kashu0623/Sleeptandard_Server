@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -36,6 +37,7 @@ router = APIRouter(
     prefix="/sleep-sessions",
     tags=["sleep_sessions"],
 )
+logger = logging.getLogger("sleeptandard.sleep_session")
 
 
 def get_owned_sleep_session(
@@ -103,6 +105,15 @@ def start_sleep_session(
     db.commit()
     db.refresh(sleep_session)
 
+    logger.info(
+        "sleep_session.started",
+        extra={
+            "user_id": current_user.id,
+            "device_id": sleep_session.device_id,
+            "sleep_session_id": sleep_session.id,
+        },
+    )
+
     return SleepSessionStartResponse(
         session_id=sleep_session.id,
         user_id=sleep_session.user_id,
@@ -153,6 +164,16 @@ def finish_sleep_session(
         sleep_session.session_status = "completed"
         db.commit()
         db.refresh(sleep_session)
+
+        logger.info(
+            "sleep_session.completed",
+            extra={
+                "user_id": current_user.id,
+                "sleep_session_id": sleep_session.id,
+                "duration_sec": sleep_session.duration_sec,
+                "upload_status": sleep_session.upload_status,
+            },
+        )
 
     return SleepSessionFinishResponse(
         session_id=sleep_session.id,
@@ -207,6 +228,16 @@ def abort_sleep_session(
     sleep_session.session_status = "aborted"
     db.commit()
     db.refresh(sleep_session)
+
+    logger.info(
+        "sleep_session.aborted",
+        extra={
+            "user_id": current_user.id,
+            "sleep_session_id": sleep_session.id,
+            "duration_sec": sleep_session.duration_sec,
+            "upload_status": sleep_session.upload_status,
+        },
+    )
 
     return SleepSessionAbortResponse(
         session_id=sleep_session.id,

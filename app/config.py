@@ -5,6 +5,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Wearable Sleep API"
+    app_env: str = "local"
+    log_level: str = "INFO"
+    log_service_name: str = "sleeptandard-api"
+    log_health_requests: bool = False
     database_url: str = (
         "postgresql+psycopg://wearable:wearable@localhost:5432/wearable_sleep"
     )

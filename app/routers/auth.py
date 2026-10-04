@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,6 +19,7 @@ from app.services.auth import create_access_token, hash_password, verify_passwor
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger("sleeptandard.auth")
 
 
 def _auth_user_response(user: User) -> AuthUserResponse:
@@ -66,6 +69,11 @@ def signup(
     db.commit()
     db.refresh(user)
 
+    logger.info(
+        "auth.signup_succeeded",
+        extra={"user_id": user.id},
+    )
+
     return _token_response(user)
 
 
@@ -82,6 +90,10 @@ def login(
             "Invalid email or password",
         )
 
+    logger.info(
+        "auth.login_succeeded",
+        extra={"user_id": user.id},
+    )
     return _token_response(user)
 
 

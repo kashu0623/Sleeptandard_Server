@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -35,6 +36,7 @@ from app.services.s3 import (
 
 
 router = APIRouter(prefix="/v1", tags=["raw_uploads"])
+logger = logging.getLogger("sleeptandard.raw_upload")
 
 RAW_FORMAT_VERSION = "potch-raw-v1"
 RAW_CONTENT_TYPE = "application/octet-stream"
@@ -284,6 +286,16 @@ def initiate_raw_upload(
     )
     if existing_upload is not None:
         response.status_code = status.HTTP_200_OK
+        logger.info(
+            "raw_upload.reused",
+            extra={
+                "user_id": current_user.id,
+                "sleep_session_id": session_id,
+                "upload_id": existing_upload.id,
+                "upload_status": existing_upload.status,
+                "size_bytes": existing_upload.size_bytes,
+            },
+        )
         return _raw_upload_response(existing_upload)
 
     object_key = _object_key(sleep_session, session_id)
@@ -310,6 +322,16 @@ def initiate_raw_upload(
     db.add(upload)
     db.commit()
     db.refresh(upload)
+    logger.info(
+        "raw_upload.initiated",
+        extra={
+            "user_id": current_user.id,
+            "sleep_session_id": session_id,
+            "upload_id": upload.id,
+            "upload_status": upload.status,
+            "size_bytes": upload.size_bytes,
+        },
+    )
     return _raw_upload_response(upload)
 
 
@@ -376,6 +398,16 @@ def report_raw_upload_attempt(
             sleep_session.upload_status = "uploading"
         db.commit()
         db.refresh(upload)
+        logger.info(
+            "raw_upload.attempted",
+            extra={
+                "user_id": current_user.id,
+                "sleep_session_id": session_id,
+                "upload_id": upload.id,
+                "upload_status": upload.status,
+                "attempt_count": upload.attempt_count,
+            },
+        )
     return _raw_upload_status_response(upload)
 
 
@@ -417,6 +449,18 @@ def report_raw_upload_failure(
         sleep_session.upload_status = "failed"
     db.commit()
     db.refresh(upload)
+    logger.warning(
+        "raw_upload.failed",
+        extra={
+            "user_id": current_user.id,
+            "sleep_session_id": session_id,
+            "upload_id": upload.id,
+            "upload_status": upload.status,
+            "attempt_count": upload.attempt_count,
+            "error_code": request.error_code,
+            "retryable": request.retryable,
+        },
+    )
     return _raw_upload_status_response(upload)
 
 
@@ -537,6 +581,19 @@ def complete_raw_upload(
     db.commit()
     db.refresh(upload)
 
+    logger.info(
+        "raw_upload.completed",
+        extra={
+            "user_id": current_user.id,
+            "sleep_session_id": session_id,
+            "upload_id": upload.id,
+            "upload_status": upload.status,
+            "attempt_count": upload.attempt_count,
+            "size_bytes": upload.size_bytes,
+            "uploaded_bytes": upload.size_bytes,
+        },
+    )
+
     return RawUploadCompleteResponse(
         status=upload.status,
         object_key=upload.object_key,
@@ -566,6 +623,16 @@ def abort_raw_upload(
         if sleep_session is not None:
             sleep_session.upload_status = "failed"
         db.commit()
+        logger.info(
+            "raw_upload.aborted",
+            extra={
+                "user_id": current_user.id,
+                "sleep_session_id": session_id,
+                "upload_id": upload.id,
+                "upload_status": upload.status,
+                "attempt_count": upload.attempt_count,
+            },
+        )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db.session import get_db
 from app.errors import register_exception_handlers
+from app.logging import RequestLoggingMiddleware, configure_logging
 from app.routers.auth import router as auth_router
 from app.routers.devices import router as devices_router
 from app.routers.raw_uploads import router as raw_uploads_router
@@ -13,6 +14,7 @@ from app.routers.users import router as users_router
 
 
 settings = get_settings()
+configure_logging(settings)
 
 openapi_tags = [
     {
@@ -48,6 +50,10 @@ app = FastAPI(
     openapi_tags=openapi_tags,
 )
 register_exception_handlers(app)
+app.add_middleware(
+    RequestLoggingMiddleware,
+    log_health_requests=settings.log_health_requests,
+)
 app.include_router(auth_router)
 app.include_router(devices_router)
 app.include_router(raw_uploads_router)

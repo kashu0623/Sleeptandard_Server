@@ -107,6 +107,10 @@ S3_BUCKET_NAME=sleeptandard-raw-dev-062560095342-apne2
 S3_UPLOAD_URL_EXPIRES_SEC=900
 S3_MULTIPART_BACKEND=aws
 PUBLIC_BASE_URL=https://DEV_ELASTIC_BEANSTALK_URL
+APP_ENV=dev
+LOG_LEVEL=INFO
+LOG_SERVICE_NAME=sleeptandard-api
+LOG_HEALTH_REQUESTS=false
 ```
 
 주의:
@@ -196,6 +200,8 @@ users/{user_id}/sleep-sessions/{session_id}/sensor.raw.v1.bin
 ```
 
 ## 9. 참고 문서
+
+서버 로그 필드와 CloudWatch 검색 방법은 `docs/server_cloudwatch_logging.md`를 참고합니다.
 
 - AWS Elastic Beanstalk Python platform
 - AWS Elastic Beanstalk Procfile

@@ -1,9 +1,13 @@
+import logging
 from typing import Any
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+logger = logging.getLogger("sleeptandard.error")
 
 
 class AppError(Exception):
@@ -33,12 +37,27 @@ def raise_app_error(status_code: int, code: str, message: str, **extra: Any) -> 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+        logger.warning(
+            "request.rejected",
+            extra={
+                "status_code": exc.status_code,
+                "error_code": exc.code,
+                "retryable": exc.extra.get("retryable"),
+            },
+        )
         return error_response(exc.status_code, exc.code, exc.message, **exc.extra)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        logger.warning(
+            "request.validation_failed",
+            extra={
+                "status_code": status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "error_code": "VALIDATION_ERROR",
+            },
+        )
         return error_response(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "VALIDATION_ERROR",
@@ -51,4 +70,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: StarletteHTTPException
     ) -> JSONResponse:
         message = str(exc.detail) if exc.detail else "HTTP error"
+        logger.warning(
+            "request.http_error",
+            extra={
+                "status_code": exc.status_code,
+                "error_code": "HTTP_ERROR",
+            },
+        )
         return error_response(exc.status_code, "HTTP_ERROR", message)

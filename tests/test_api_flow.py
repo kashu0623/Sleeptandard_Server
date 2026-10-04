@@ -1,11 +1,15 @@
+import json
+import logging
 import uuid
 from urllib.parse import urlparse
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.main import app
+from app.logging import JsonLogFormatter, RequestLoggingMiddleware
 from app.services.auth import create_access_token
 
 
@@ -29,13 +33,69 @@ def create_auth_headers() -> tuple[dict[str, str], str]:
 
 
 def test_health_and_db_health() -> None:
-    health_response = client.get("/health")
+    health_response = client.get(
+        "/health",
+        headers={"X-Request-ID": "health-check-test-001"},
+    )
     assert health_response.status_code == 200
     assert health_response.json() == {"status": "ok"}
+    assert health_response.headers["X-Request-ID"] == "health-check-test-001"
 
     db_response = client.get("/health/db")
     assert db_response.status_code == 200
     assert db_response.json() == {"status": "ok", "db": 1}
+    uuid.UUID(db_response.headers["X-Request-ID"])
+
+
+def test_json_log_formatter_keeps_only_approved_structured_fields() -> None:
+    formatter = JsonLogFormatter(service="test-api", environment="test")
+    record = logging.LogRecord(
+        name="sleeptandard.test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="raw_upload.completed",
+        args=(),
+        exc_info=None,
+    )
+    record.request_id = "request-123"
+    record.sleep_session_id = "session-123"
+    record.upload_id = "upload-123"
+    record.status_code = 200
+    record.password = "must-not-appear"
+    record.authorization = "Bearer must-not-appear"
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["event"] == "raw_upload.completed"
+    assert payload["request_id"] == "request-123"
+    assert payload["sleep_session_id"] == "session-123"
+    assert payload["upload_id"] == "upload-123"
+    assert payload["status_code"] == 200
+    assert "password" not in payload
+    assert "authorization" not in payload
+    assert "must-not-appear" not in json.dumps(payload)
+
+
+def test_request_logging_middleware_returns_safe_unhandled_error() -> None:
+    failing_app = FastAPI()
+    failing_app.add_middleware(RequestLoggingMiddleware)
+
+    @failing_app.get("/fail")
+    def fail() -> None:
+        raise RuntimeError("test failure")
+
+    response = TestClient(failing_app).get(
+        "/fail",
+        headers={"X-Request-ID": "failure-test-001"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "INTERNAL_SERVER_ERROR",
+        "message": "Internal server error",
+    }
+    assert response.headers["X-Request-ID"] == "failure-test-001"
 
 
 def test_protected_apis_require_api_key() -> None:
